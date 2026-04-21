@@ -1,0 +1,13 @@
+camera_index: 0
+frame_width: 1280
+frame_height: 720
+
+max_num_hands: 2
+min_detection_confidence: 0.6
+min_tracking_confidence: 0.5
+model_asset_path: models/hand_landmarker.task
+model_asset_url: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+
+draw_landmarks: true
+record_landmarks: false
+output_path: data/sessions/landmarks.jsonl
