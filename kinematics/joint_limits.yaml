@@ -1,0 +1,199 @@
+# kinematics/joint_limits.yaml
+#
+# Per-joint angle limits (radians) and max velocities (rad/s) for retargeted
+# robot hand control.
+#
+# Primary reference: Shadow Hand E3M5 datasheet (Dexterous Hand Technical
+# Specification, Shadow Robot Company). Allegro Hand v4 deviations are
+# noted inline where they differ by more than ~5 degrees.
+#
+# Angle sign convention matches retargeting.py:
+#   flexion  : 0 = fully extended, positive = curling toward palm
+#   abduction: 0 = neutral, positive = spreading away from middle finger
+#
+# All values in RADIANS unless the comment says otherwise.
+# max_vel is a conservative operational limit, not the hardware maximum.
+#
+# Layout
+# ------
+#   fingers:
+#     <finger>:
+#       <joint>:
+#         min: <float>   # lower bound (rad)
+#         max: <float>   # upper bound (rad)
+#         max_vel: <float>  # rad/s
+#
+# Conversion reference: 1 degree = 0.01745 rad
+
+fingers:
+
+  # Index finger
+  # Shadow: FF (first finger). Allegro: finger 1.
+  index:
+
+    mcp_flexion:
+      # Shadow FF J1: -20 deg to 90 deg
+      # Allegro finger 1 pitch: 0 deg to 73.6 deg (no hyperextension)
+      # Using Shadow range; clamp to 0 in sim if Allegro target.
+      min: -0.349   # -20 deg
+      max:  1.571   #  90 deg
+      max_vel: 2.0
+
+    pip_flexion:
+      # Shadow FF J2: 0 deg to 90 deg
+      # Allegro: no separate PIP (4-DOF per finger, not 3-phalanx)
+      min: 0.0
+      max: 1.571   # 90 deg
+      max_vel: 2.0
+
+    dip_flexion:
+      # Shadow FF J3: -20 deg to 90 deg
+      # Note: DIP typically tracks ~2/3 of PIP in natural motion.
+      # Allegro maps this to its distal joint (range 0-73.6 deg).
+      min: -0.349   # -20 deg
+      max:  1.571   #  90 deg
+      max_vel: 2.0
+
+    mcp_abduction:
+      # Shadow FF J4 (spread): -20 deg to 20 deg
+      # Allegro finger 1 yaw: -9 deg to 9 deg (tighter)
+      min: -0.349   # -20 deg
+      max:  0.349   #  20 deg
+      max_vel: 1.0
+
+  # Middle finger
+  # Shadow: MF. Allegro: finger 2.
+  middle:
+
+    mcp_flexion:
+      min: -0.349   # -20 deg
+      max:  1.571   #  90 deg
+      max_vel: 2.0
+
+    pip_flexion:
+      min: 0.0
+      max: 1.571   # 90 deg
+      max_vel: 2.0
+
+    dip_flexion:
+      min: -0.349   # -20 deg
+      max:  1.571   # 90 deg
+      max_vel: 2.0
+
+    mcp_abduction:
+      # Middle finger is abduction reference (0 = neutral)
+      # Shadow MF J4: -20 deg to 20 deg
+      min: -0.349
+      max:  0.349
+      max_vel: 1.0
+
+  # Ring finger
+  # Shadow: RF. Allegro: finger 3.
+  ring:
+
+    mcp_flexion:
+      min: -0.349
+      max:  1.571
+      max_vel: 2.0
+
+    pip_flexion:
+      min: 0.0
+      max: 1.571
+      max_vel: 2.0
+
+    dip_flexion:
+      min: -0.349
+      max:  1.571
+      max_vel: 2.0
+
+    mcp_abduction:
+      # Shadow RF J4: -20 deg to 20 deg
+      min: -0.349
+      max:  0.349
+      max_vel: 1.0
+
+  # Pinky finger
+  # Shadow: LF (little finger). Allegro: finger 0.
+  pinky:
+
+    mcp_flexion:
+      # Shadow LF J1: 0 deg to 90 deg (no hyperextension on little finger)
+      min: 0.0
+      max: 1.571
+      max_vel: 2.0
+
+    pip_flexion:
+      min: 0.0
+      max: 1.571
+      max_vel: 2.0
+
+    dip_flexion:
+      min: -0.349
+      max:  1.571
+      max_vel: 2.0
+
+    mcp_abduction:
+      # Shadow LF J5 (spread): 0 deg to 20 deg (only spreads outward from ring)
+      # Allegro finger 0 yaw: -9 deg to 9 deg
+      min: 0.0
+      max: 0.349   # 20 deg
+      max_vel: 1.0
+
+  # Thumb
+  # Shadow: TH. Allegro: thumb (different kinematic structure)
+  #
+  # Shadow thumb has 5 DOF (TH1-TH5). We expose the 3 that retargeting.py
+  # computes: CMC flexion, MCP flexion, IP flexion. The rotational/opposition
+  # DOF (TH1) is not yet retargeted and is omitted here.
+  #
+  # Allegro thumb: 4 DOF with different CMC arrangement. Ranges below are
+  # Shadow-native; for Allegro remap CMC to proximal joint (approx 0-70 deg
+  # pitch, -27 to 27 deg yaw).
+  thumb:
+
+    cmc_flexion:
+      # Shadow TH2 (CMC abduction/flexion): -40 deg to 40 deg
+      # Controls how far thumb swings away from palm.
+      min: -0.698   # -40 deg
+      max:  0.698   #  40 deg
+      max_vel: 1.5
+
+    mcp_flexion:
+      # Shadow TH3: -15 deg to 90 deg
+      min: -0.262   # -15 deg
+      max:  1.571   #  90 deg
+      max_vel: 2.0
+
+    ip_flexion:
+      # Shadow TH5 (IP): -20 deg to 20 deg
+      # Thumb IP has less range than finger DIPs.
+      min: -0.349   # -20 deg
+      max:  0.349   #  20 deg
+      max_vel: 1.5
+
+
+# Wrist (future use)
+# Not yet retargeted. Values here for when wrist DOF are added.
+# Shadow wrist: 2 DOF (flexion/extension + radial/ulnar deviation).
+wrist:
+
+  flexion:
+    # Shadow WRJ1: -40 deg (extension) to 28 deg (flexion)
+    min: -0.698   # -40 deg
+    max:  0.489   #  28 deg
+    max_vel: 1.0
+
+  deviation:
+    # Shadow WRJ2: -28 deg (ulnar) to 8 deg (radial)
+    min: -0.489   # -28 deg
+    max:  0.140   #   8 deg
+    max_vel: 1.0
+
+
+# Global safety margins
+# Applied by safety.py as soft inner envelope inside hard limits above.
+# Retargeted angles clamped to [min + margin, max - margin] before sending
+# to sim, preventing robot from hitting mechanical stops.
+safety:
+  margin_rad: 0.087       # 5 degrees (pulled in from each hard limit)
+  max_joint_delta_rad: 0.175  # max change per control step (~10 deg at 30 Hz)
