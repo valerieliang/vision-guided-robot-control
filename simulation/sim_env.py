@@ -3,6 +3,12 @@
 Loads the URDF, exposes a clean set_joint_angles() interface, and runs
 the physics step.  Mesh paths in the URDF are relative to the URDF file's
 own directory, so we set the PyBullet search path accordingly.
+
+Window layout
+-------------
+PyBullet's GUI window is positioned to the RIGHT of the camera feed.
+Assuming the camera window is 640 px wide at x=0, the sim window starts
+at x=660.  Adjust SIM_WINDOW_X if your screen layout differs.
 """
 
 from __future__ import annotations
@@ -13,14 +19,34 @@ import numpy as np
 import pybullet as pb
 import pybullet_data
 
-# Path to the URDF relative to the project root.
 _DEFAULT_URDF = Path("simulation/assets/allegro/allegro_hand_right.urdf")
-
-# Allegro revolute joint indices in the loaded model (0-indexed as PyBullet
-# reports them).  Fixed joints (the four *_tip joints) are excluded — PyBullet
-# skips them in its joint index sequence, so the 16 revolute joints map to
-# indices 0–15 directly.
 _NUM_JOINTS = 16
+
+# Screen position for the PyBullet GUI (pixels from top-left).
+# Place it to the right of the 640-wide camera window.
+SIM_WINDOW_X = 660
+SIM_WINDOW_Y = 30
+
+# Allegro thumb joint 12 (CMC) has URDF limits lower=0.263, upper=1.396.
+# Sending 0 parks the thumb fully retracted behind the palm — unintuitive.
+# We initialise it at the midpoint so it starts in a natural opposition pose.
+_THUMB_CMC_NEUTRAL = 0.829   # (0.263 + 1.396) / 2
+
+# Full neutral pose: fingers open, thumb naturally opposed.
+# Order matches _collect_revolute_joints() — i.e. Allegro joint 0–15.
+_NEUTRAL_POSE = np.array([
+    # pinky  (joints 0–3):  spread=0, flexion=0
+     0.0,  0.0,  0.0,  0.0,
+    # ring   (joints 4–7)
+     0.0,  0.0,  0.0,  0.0,
+    # middle (joints 8–11)
+     0.0,  0.0,  0.0,  0.0,
+    # index  (joints 12–15) — NOTE: Allegro finger 3 is index
+     0.0,  0.0,  0.0,  0.0,
+], dtype=np.float64)
+# Thumb is joints 12–15 in the URDF joint numbering used by robot_controller.
+# sim_env receives the already-mapped 16-element array from AllegroController,
+# so we don't need to special-case thumb here — AllegroController handles it.
 
 
 class AllegroSimEnv:
@@ -29,16 +55,13 @@ class AllegroSimEnv:
     Parameters
     ----------
     urdf_path:
-        Path to ``allegro_hand_right.urdf``.  Defaults to the project-standard
-        location ``simulation/assets/allegro/allegro_hand_right.urdf``.
+        Path to ``allegro_hand_right.urdf``.
     gui:
-        If True, open the PyBullet GUI window.  Pass False for headless use.
+        If True, open the PyBullet GUI window.
     timestep:
-        Physics timestep in seconds.  Default matches a 240 Hz sim (PyBullet
-        default); the teleop loop steps this manually at ~30 Hz.
+        Physics timestep in seconds (default 1/240 s).
     gravity:
-        Gravitational acceleration (m/s²).  Set to 0 to disable gravity so
-        the unsupported hand doesn't fall.
+        Gravitational acceleration (m/s²).  0 = disabled (hand floats).
     """
 
     def __init__(
@@ -52,7 +75,6 @@ class AllegroSimEnv:
         self._timestep = timestep
         self._gui = gui
 
-        # Connect to PyBullet.
         mode = pb.GUI if gui else pb.DIRECT
         self._client = pb.connect(mode)
 
@@ -61,21 +83,11 @@ class AllegroSimEnv:
         pb.setTimeStep(timestep)
 
         if gui:
-            self._configure_camera()
+            self._configure_gui()
 
         self._hand_id = self._load_hand()
         self._joint_indices = self._collect_revolute_joints()
-
-        # Enable position control on all revolute joints with low forces so
-        # the hand moves smoothly without snapping.
-        for idx in self._joint_indices:
-            pb.setJointMotorControl2(
-                self._hand_id,
-                idx,
-                pb.POSITION_CONTROL,
-                targetPosition=0.0,
-                force=0.5,
-            )
+        self._init_controllers()
 
     # ------------------------------------------------------------------
     # Public API
@@ -87,26 +99,20 @@ class AllegroSimEnv:
         Parameters
         ----------
         angles:
-            A length-16 array in Allegro joint order:
-            joints 0–3   → pinky   (index 0 = MCP spread, 1–3 = flexion)
-            joints 4–7   → ring
-            joints 8–11  → middle
-            joints 12–15 → thumb
-            This matches the order produced by
-            ``robot_controller.AllegroController.retargeted_to_allegro()``.
+            Length-16 array produced by ``AllegroController.retargeted_to_allegro()``.
+            Allegro joint order: 0–3 pinky, 4–7 ring, 8–11 middle, 12–15 thumb.
         """
         if len(angles) != _NUM_JOINTS:
             raise ValueError(
                 f"Expected {_NUM_JOINTS} joint angles, got {len(angles)}."
             )
-
         for allegro_idx, joint_idx in enumerate(self._joint_indices):
             pb.setJointMotorControl2(
                 self._hand_id,
                 joint_idx,
                 pb.POSITION_CONTROL,
                 targetPosition=float(angles[allegro_idx]),
-                force=0.5,
+                force=0.8,
                 maxVelocity=2.0,
             )
 
@@ -115,14 +121,14 @@ class AllegroSimEnv:
         pb.stepSimulation()
 
     def get_joint_angles(self) -> np.ndarray:
-        """Return the current joint positions (radians) for all 16 joints."""
+        """Return current joint positions (radians) for all 16 joints."""
         states = pb.getJointStates(self._hand_id, self._joint_indices)
         return np.array([s[0] for s in states], dtype=np.float32)
 
     def reset(self) -> None:
         """Reset all joints to the neutral open-hand pose."""
-        for idx in self._joint_indices:
-            pb.resetJointState(self._hand_id, idx, 0.0)
+        for i, joint_idx in enumerate(self._joint_indices):
+            pb.resetJointState(self._hand_id, joint_idx, _NEUTRAL_POSE[i])
 
     def close(self) -> None:
         """Disconnect from PyBullet."""
@@ -141,12 +147,10 @@ class AllegroSimEnv:
 
     def _load_hand(self) -> int:
         """Load the Allegro URDF and return its body ID."""
-        # PyBullet resolves relative mesh paths from the URDF's own directory.
         pb.setAdditionalSearchPath(str(self._urdf_path.parent))
-
         hand_id = pb.loadURDF(
             str(self._urdf_path),
-            basePosition=[0.0, 0.0, 0.2],   # lifted so it's visible
+            basePosition=[0.0, 0.0, 0.2],
             baseOrientation=pb.getQuaternionFromEuler([0.0, 0.0, 0.0]),
             useFixedBase=True,
             flags=pb.URDF_USE_SELF_COLLISION,
@@ -156,25 +160,62 @@ class AllegroSimEnv:
     def _collect_revolute_joints(self) -> list[int]:
         """Return PyBullet joint indices for all revolute joints in order."""
         revolute: list[int] = []
-        num_joints = pb.getNumJoints(self._hand_id)
-        for i in range(num_joints):
+        for i in range(pb.getNumJoints(self._hand_id)):
             info = pb.getJointInfo(self._hand_id, i)
-            joint_type = info[2]
-            if joint_type == pb.JOINT_REVOLUTE:
+            if info[2] == pb.JOINT_REVOLUTE:
                 revolute.append(i)
-
         if len(revolute) != _NUM_JOINTS:
             raise RuntimeError(
-                f"Expected {_NUM_JOINTS} revolute joints in Allegro URDF, "
-                f"found {len(revolute)}.  Check the URDF path and mesh replacement."
+                f"Expected {_NUM_JOINTS} revolute joints, found {len(revolute)}."
             )
         return revolute
 
-    def _configure_camera(self) -> None:
-        """Set a sensible default viewpoint for the GUI."""
+    def _init_controllers(self) -> None:
+        """Initialise position controllers and set the neutral pose."""
+        for i, joint_idx in enumerate(self._joint_indices):
+            pb.resetJointState(self._hand_id, joint_idx, _NEUTRAL_POSE[i])
+            pb.setJointMotorControl2(
+                self._hand_id,
+                joint_idx,
+                pb.POSITION_CONTROL,
+                targetPosition=_NEUTRAL_POSE[i],
+                force=0.8,
+            )
+
+    def _configure_gui(self) -> None:
+        """Configure camera viewpoint and move the window to the right side."""
         pb.resetDebugVisualizerCamera(
-            cameraDistance=0.45,
-            cameraYaw=45,
-            cameraPitch=-30,
+            cameraDistance=0.4,
+            cameraYaw=35,
+            cameraPitch=-20,
             cameraTargetPosition=[0.0, 0.0, 0.2],
         )
+        # Disable default mouse picking panel to reduce visual clutter.
+        pb.configureDebugVisualizer(pb.COV_ENABLE_MOUSE_PICKING, 0)
+        pb.configureDebugVisualizer(pb.COV_ENABLE_GUI, 0)
+
+        # Position the window to the right of the camera feed.
+        # PyBullet doesn't have a Python API for window position, but we can
+        # set it via the OpenGL window title argument on some platforms.
+        # On Windows the reliable method is to use the win32 API post-spawn.
+        try:
+            import ctypes, threading, time as _time
+
+            def _move_window() -> None:
+                _time.sleep(1.5)   # wait for the GL window to appear
+                hwnd = ctypes.windll.user32.FindWindowW(None, "Bullet Physics ExampleBrowser using OpenGL3+ [btgl] Release build")
+                if not hwnd:
+                    # Try alternate title seen on some PyBullet versions
+                    hwnd = ctypes.windll.user32.FindWindowW(None, "OpenGL 3+")
+                if hwnd:
+                    # SWP_NOSIZE = 0x0001, SWP_NOZORDER = 0x0004
+                    ctypes.windll.user32.SetWindowPos(
+                        hwnd, None,
+                        SIM_WINDOW_X, SIM_WINDOW_Y,
+                        0, 0,
+                        0x0001 | 0x0004,
+                    )
+
+            threading.Thread(target=_move_window, daemon=True).start()
+        except Exception:
+            pass   # Non-Windows or ctypes unavailable — window stays wherever PyBullet puts it
