@@ -1,13 +1,46 @@
+# Runtime mode:
+#   hand                webcam landmarks drive the Allegro hand
+#   neurotech_replay    decoded labels from neuro_replay_path drive hand poses
+#   synthetic_neurotech no-hardware decoded-label demo
+#   hybrid              hand when visible, neurotech fallback otherwise
+input_source: hand
+
 camera_index: 0
 frame_width: 1280
 frame_height: 720
 
-max_num_hands: 2
+max_num_hands: 1
 min_detection_confidence: 0.6
 min_tracking_confidence: 0.5
 model_asset_path: models/hand_landmarker.task
 model_asset_url: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
 
-draw_landmarks: true
-record_landmarks: false
-output_path: data/sessions/landmarks.jsonl
+urdf_path: simulation/assets/allegro/allegro_hand_right.urdf
+gui: true
+gravity: 0.0
+target_hz: 15.0
+limits_path: kinematics/joint_limits.yaml
+
+# Smoothing helps reduce MediaPipe landmark jitter before retargeting.
+landmark_smoothing_alpha: 0.45
+hand_min_score: 0.35
+hand_hold_frames: 3
+angle_smoothing_alpha: 0.35
+angle_deadband_rad: 0.015
+angle_max_step_rad: 0.22
+
+# Used by neurotech_replay and hybrid fallback.
+neuro_replay_path: data/neuro_replay_example.jsonl
+neuro_replay_interval_s: 0.35
+neuro_confidence_threshold: 0.55
+
+show_camera: true
+camera_window: Hand Tracking
+handedness_display: mediapipe
+camera_window_x: 0
+camera_window_y: 30
+display_width: 640
+display_height: 360
+
+log_latency: true
+latency_window: 30

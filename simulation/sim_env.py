@@ -199,7 +199,9 @@ class AllegroSimEnv:
         # set it via the OpenGL window title argument on some platforms.
         # On Windows the reliable method is to use the win32 API post-spawn.
         try:
-            import ctypes, threading, time as _time
+            import ctypes
+            import threading
+            import time as _time
 
             def _move_window() -> None:
                 _time.sleep(1.5)   # wait for the GL window to appear

@@ -33,7 +33,7 @@ def main() -> None:
         config = load_config()
         with TeleopLoop(config) as loop:
             loop.run()
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise SystemExit(f"Error: {exc}") from exc
     except KeyboardInterrupt:
         print("\nStopped.")

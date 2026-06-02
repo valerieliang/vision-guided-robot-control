@@ -17,19 +17,19 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
-import pybullet as pb
 
 from control.latency_monitor import LatencyMonitor
 from cv.camera import open_camera, read_frame
 from cv.hand_tracker import HandTracker
-from cv.smoothing import passthrough
+from cv.smoothing import AngleSmoother, HandLandmarkSmoother
 from kinematics.retargeting import retarget_all
+from neurotech.decoders import NeuroIntent, NeuroReplaySource, SyntheticNeuroSource
+from neurotech.intent_mapping import NeuroHandPoseMapper
 from simulation.robot_controller import AllegroController
-from simulation.sim_env import AllegroSimEnv
 from viz.overlay import draw_hands
 
 
@@ -60,10 +60,25 @@ class TeleopConfig:
     # Control — 15 Hz is safe on CPU-only; raise if you have a fast machine
     target_hz: float = 15.0
     limits_path: str = "kinematics/joint_limits.yaml"
+    input_source: str = "hand"
+
+    # Smoothing / dropout handling
+    landmark_smoothing_alpha: float = 0.45
+    hand_min_score: float = 0.35
+    hand_hold_frames: int = 3
+    angle_smoothing_alpha: float = 0.35
+    angle_deadband_rad: float = 0.015
+    angle_max_step_rad: float = 0.22
+
+    # Neurotech decoded-data replay
+    neuro_replay_path: str | None = None
+    neuro_replay_interval_s: float = 0.35
+    neuro_confidence_threshold: float = 0.55
 
     # Display
     show_camera: bool = True
     camera_window: str = "Hand Tracking"
+    handedness_display: str = "mediapipe"
 
     # Camera window screen position (pixels from top-left of monitor)
     camera_window_x: int = 0
@@ -84,30 +99,60 @@ class TeleopLoop:
         self._cfg = config or TeleopConfig()
         self._capture = None
         self._tracker: HandTracker | None = None
-        self._sim: AllegroSimEnv | None = None
+        self._sim: Any | None = None
         self._controller: AllegroController | None = None
         self._monitor: LatencyMonitor | None = None
+        self._hand_smoother: HandLandmarkSmoother | None = None
+        self._angle_smoother: AngleSmoother | None = None
+        self._neuro_source: NeuroReplaySource | SyntheticNeuroSource | None = None
+        self._neuro_mapper: NeuroHandPoseMapper | None = None
+        self._last_neuro_intent: NeuroIntent | None = None
+        self._pb: Any | None = None
 
     def _setup(self) -> None:
         cfg = self._cfg
+        self._validate_input_source()
 
-        self._tracker = HandTracker(
-            max_num_hands=cfg.max_num_hands,
-            min_detection_confidence=cfg.min_detection_confidence,
-            min_tracking_confidence=cfg.min_tracking_confidence,
-            model_asset_path=cfg.model_asset_path,
-            model_asset_url=cfg.model_asset_url,
+        if self._uses_camera:
+            self._tracker = HandTracker(
+                max_num_hands=cfg.max_num_hands,
+                min_detection_confidence=cfg.min_detection_confidence,
+                min_tracking_confidence=cfg.min_tracking_confidence,
+                model_asset_path=cfg.model_asset_path,
+                model_asset_url=cfg.model_asset_url,
+            )
+            self._hand_smoother = HandLandmarkSmoother(
+                alpha=cfg.landmark_smoothing_alpha,
+                min_score=cfg.hand_min_score,
+                hold_frames=cfg.hand_hold_frames,
+            )
+            self._capture = open_camera(
+                cfg.camera_index, cfg.frame_width, cfg.frame_height
+            )
+
+        self._angle_smoother = AngleSmoother(
+            alpha=cfg.angle_smoothing_alpha,
+            deadband_rad=cfg.angle_deadband_rad,
+            max_step_rad=cfg.angle_max_step_rad,
         )
 
-        self._capture = open_camera(
-            cfg.camera_index, cfg.frame_width, cfg.frame_height
-        )
+        if self._uses_neurotech:
+            self._neuro_mapper = NeuroHandPoseMapper(cfg.neuro_confidence_threshold)
+            if cfg.input_source == "synthetic_neurotech":
+                self._neuro_source = SyntheticNeuroSource(
+                    interval_s=cfg.neuro_replay_interval_s
+                )
+            elif cfg.neuro_replay_path:
+                self._neuro_source = NeuroReplaySource(
+                    cfg.neuro_replay_path,
+                    interval_s=cfg.neuro_replay_interval_s,
+                )
+            else:
+                self._neuro_source = SyntheticNeuroSource(
+                    interval_s=cfg.neuro_replay_interval_s
+                )
 
-        self._sim = AllegroSimEnv(
-            urdf_path=cfg.urdf_path,
-            gui=cfg.gui,
-            gravity=cfg.gravity,
-        )
+        self._sim = self._create_sim_backend()
 
         self._controller = AllegroController(
             limits_path=cfg.limits_path,
@@ -118,7 +163,7 @@ class TeleopLoop:
             self._monitor = LatencyMonitor(window=cfg.latency_window)
 
         # Pin camera window to the left side of the screen.
-        if cfg.show_camera:
+        if cfg.show_camera and self._uses_camera:
             cv2.namedWindow(cfg.camera_window, cv2.WINDOW_NORMAL)
             cv2.resizeWindow(cfg.camera_window, cfg.display_width, cfg.display_height)
             cv2.moveWindow(cfg.camera_window, cfg.camera_window_x, cfg.camera_window_y)
@@ -141,30 +186,14 @@ class TeleopLoop:
             t0 = time.perf_counter()
 
             # Exit cleanly if the PyBullet GUI was closed by the user.
-            if cfg.gui and not pb.isConnected():
+            if self._pb is not None and cfg.gui and not self._pb.isConnected():
                 print("[teleop] PyBullet window closed — stopping.")
                 break
 
-            # ── 1. Capture ────────────────────────────────────────────
-            frame = read_frame(self._capture)
-            if frame is None:
-                print("Warning: empty frame, skipping.")
-                continue
-
-            # ── 2. Detect ─────────────────────────────────────────────
-            hands = passthrough(self._tracker.detect(frame))
-
-            # ── 3. Retarget ───────────────────────────────────────────
-            if hands:
-                joint_angles_list = retarget_all(hands[:1])
-                flat = joint_angles_list[0].as_flat_array()
-                allegro_cmd = self._controller.retargeted_to_allegro(flat)
-                active_hand = hands[0]
-            else:
-                allegro_cmd = self._controller.retargeted_to_allegro(
-                    np.zeros(19, dtype=np.float32)
-                )
-                active_hand = None
+            frame, hands, active_hand = self._read_smoothed_hands()
+            flat, source_label = self._next_retargeted_command(hands)
+            flat = self._angle_smoother.update(flat)
+            allegro_cmd = self._controller.retargeted_to_allegro(flat)
 
             # ── 4. Simulate ───────────────────────────────────────────
             try:
@@ -176,15 +205,25 @@ class TeleopLoop:
                 break
 
             # ── 5. Display ────────────────────────────────────────────
-            if cfg.show_camera:
+            if cfg.show_camera and self._uses_camera and frame is not None:
                 display = cv2.resize(
                     frame, (cfg.display_width, cfg.display_height)
                 )
                 # Scale connections to match the smaller display frame.
                 display = draw_hands(display, hands, self._tracker.connections)
                 fps = 1.0 / max(time.perf_counter() - t0, 1e-6)
-                _draw_hud(display, fps, active_hand)
+                _draw_hud(
+                    display,
+                    fps,
+                    active_hand,
+                    source_label,
+                    self._last_neuro_intent,
+                    cfg.handedness_display,
+                )
                 cv2.imshow(cfg.camera_window, display)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            elif not self._uses_camera:
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
 
@@ -212,6 +251,74 @@ class TeleopLoop:
     def __exit__(self, *_: object) -> None:
         self._teardown()
 
+    @property
+    def _uses_camera(self) -> bool:
+        return self._cfg.input_source in {"hand", "hybrid"}
+
+    @property
+    def _uses_neurotech(self) -> bool:
+        return self._cfg.input_source in {
+            "neurotech_replay",
+            "synthetic_neurotech",
+            "hybrid",
+        }
+
+    def _validate_input_source(self) -> None:
+        valid = {"hand", "neurotech_replay", "synthetic_neurotech", "hybrid"}
+        if self._cfg.input_source not in valid:
+            raise ValueError(
+                f"Unsupported input_source {self._cfg.input_source!r}; "
+                f"expected one of {sorted(valid)}."
+            )
+        valid_handedness = {"mediapipe", "mirrored"}
+        if self._cfg.handedness_display not in valid_handedness:
+            raise ValueError(
+                f"Unsupported handedness_display {self._cfg.handedness_display!r}; "
+                f"expected one of {sorted(valid_handedness)}."
+            )
+
+    def _create_sim_backend(self) -> Any:
+        cfg = self._cfg
+        try:
+            import pybullet as pb
+
+            from simulation.sim_env import AllegroSimEnv
+        except ImportError as exc:
+            raise RuntimeError(
+                "The previous-commit visualization uses PyBullet and the "
+                "Allegro URDF. Install pybullet to run it."
+            ) from exc
+        self._pb = pb
+        return AllegroSimEnv(
+            urdf_path=cfg.urdf_path,
+            gui=cfg.gui,
+            gravity=cfg.gravity,
+        )
+
+    def _read_smoothed_hands(
+        self,
+    ) -> tuple[np.ndarray | None, list[object], object | None]:
+        if not self._uses_camera:
+            return None, [], None
+        frame = read_frame(self._capture)
+        if frame is None:
+            print("Warning: empty frame, skipping.")
+            return None, [], None
+        detected = self._tracker.detect(frame)
+        hands = self._hand_smoother.update(detected)
+        active_hand = hands[0] if hands else None
+        return frame, hands, active_hand
+
+    def _next_retargeted_command(self, hands: list[object]) -> tuple[np.ndarray, str]:
+        if hands:
+            joint_angles_list = retarget_all(hands[:1])
+            return joint_angles_list[0].as_flat_array(), "hand"
+        if self._uses_neurotech:
+            intent = self._neuro_source.next_intent()
+            self._last_neuro_intent = intent
+            return self._neuro_mapper.to_retargeted(intent), intent.normalized_label()
+        return np.zeros(19, dtype=np.float32), "open"
+
 
 # ---------------------------------------------------------------------------
 # HUD helpers
@@ -221,6 +328,9 @@ def _draw_hud(
     frame: np.ndarray,
     fps: float,
     active_hand: object | None,
+    source_label: str,
+    neuro_intent: NeuroIntent | None,
+    handedness_display: str,
 ) -> None:
     """Burn FPS, hand label, and control status onto the display frame."""
     h, w = frame.shape[:2]
@@ -230,15 +340,36 @@ def _draw_hud(
         frame, f"FPS: {fps:.1f}",
         (12, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 80), 2, cv2.LINE_AA,
     )
+    cv2.putText(
+        frame,
+        f"CTRL: {source_label}",
+        (12, 58),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.58,
+        (0, 220, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    if neuro_intent is not None:
+        cv2.putText(
+            frame,
+            f"NEURO: {neuro_intent.normalized_label()} {neuro_intent.confidence:.2f}",
+            (12, 84),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            (210, 190, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
     if active_hand is not None:
         handedness = getattr(active_hand, "handedness", "Unknown")
-        # MediaPipe labels from camera POV (mirrored), so we flip for the user.
-        if handedness == "Left":
-            display_label = "YOUR RIGHT HAND"
+        user_handedness = _display_handedness(handedness, handedness_display)
+        if user_handedness == "Left":
+            display_label = "LEFT HAND"
             colour = (0, 220, 255)
-        elif handedness == "Right":
-            display_label = "YOUR LEFT HAND"
+        elif user_handedness == "Right":
+            display_label = "RIGHT HAND"
             colour = (255, 180, 0)
         else:
             display_label = "HAND DETECTED"
@@ -273,3 +404,18 @@ def _draw_hud(
         (w - hw - 12, h - 12),
         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA,
     )
+
+
+def _display_handedness(handedness: str, mode: str) -> str:
+    """Return the HUD handedness label.
+
+    MediaPipe's handedness can be interpreted differently depending on whether
+    the camera feed is mirrored. The default keeps MediaPipe's anatomical label.
+    """
+    if mode != "mirrored":
+        return handedness
+    if handedness == "Left":
+        return "Right"
+    if handedness == "Right":
+        return "Left"
+    return handedness
