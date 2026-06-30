@@ -14,17 +14,17 @@ Output format
 A ``JointAngles`` dataclass with one field per finger.  Each finger holds a
 ``FingerAngles`` with:
 
-  mcp_flexion   – knuckle bend (+ = curl toward palm)
-  pip_flexion   – middle-joint bend
-  dip_flexion   – tip-joint bend  (index/middle/ring/pinky only)
-  mcp_abduction – lateral spread at knuckle (index/middle/ring/pinky only)
+  mcp_flexion   -- knuckle bend (+ = curl toward palm)
+  pip_flexion   -- middle-joint bend
+  dip_flexion   -- tip-joint bend  (index/middle/ring/pinky only)
+  mcp_abduction -- lateral spread at knuckle (index/middle/ring/pinky only)
 
 Thumb uses CMC_flexion / MCP_flexion / IP_flexion instead (no DIP, no
-abduction field – thumb opposition is a separate concern).
+abduction field -- thumb opposition is a separate concern).
 
 Angle sign convention
 ---------------------
-All flexion angles are non-negative (0 = fully extended, π = fully curled).
+All flexion angles are non-negative (0 = fully extended, pi = fully curled).
 Abduction is signed: positive = spreading away from middle finger.
 """
 
@@ -51,8 +51,8 @@ _FINGER_CHAINS: dict[str, list[int]] = {
     "pinky":  [17, 18,  19,  20],
 }
 
-# Thumb chain: CMC(1) → MCP(2) → IP(3) → TIP(4)
-# We treat the wrist(0)→CMC(1) vector as the "proximal bone" for CMC flexion.
+# Thumb chain: CMC(1) -> MCP(2) -> IP(3) -> TIP(4)
+# We treat the wrist(0)->CMC(1) vector as the "proximal bone" for CMC flexion.
 _THUMB_CHAIN: list[int] = [1, 2, 3, 4]
 
 
@@ -174,7 +174,7 @@ def _wrist_relative(landmarks: list[Landmark]) -> np.ndarray:
     """Return an (N, 3) array of landmarks translated so the wrist is origin.
 
     The coordinates remain in the same scale as the raw normalized landmarks
-    (roughly 0–1 in x/y, smaller in z).  No further scaling is applied here;
+    (roughly 0--1 in x/y, smaller in z).  No further scaling is applied here;
     the bone-angle computation is scale-invariant by construction.
     """
     pts = np.array([[lm.x, lm.y, lm.z] for lm in landmarks], dtype=np.float64)
@@ -220,7 +220,7 @@ def _signed_abduction(
     # Determine sign: cross product gives a vector whose component along the
     # palm normal indicates which side of the reference finger we're on.
     cross = np.cross(ref_bone, finger_bone)
-    # Palm normal approximated from wrist → index-MCP × wrist → pinky-MCP
+    # Palm normal approximated from wrist -> index-MCP x wrist -> pinky-MCP
     palm_normal = np.cross(
         pts[_FINGER_CHAINS["index"][0]] - pts[_WRIST],
         pts[_FINGER_CHAINS["pinky"][0]] - pts[_WRIST],
@@ -244,18 +244,18 @@ def _finger_flexion_abduction(
     mcp, pip, dip, tip = chain
 
     # Flexion: angle at each joint = angle between the two bones meeting there.
-    # We measure the supplement so 0 rad = straight, π rad = fully curled.
-    mcp_flex = math.pi - _angle_between(
+    # Flexion = deviation from straight; 0 = extended, increases as finger curls.
+    mcp_flex = _angle_between(
         pts[mcp] - pts[_WRIST], pts[pip] - pts[mcp]
     )
-    pip_flex = math.pi - _angle_between(
+    pip_flex = _angle_between(
         pts[pip] - pts[mcp], pts[dip] - pts[pip]
     )
-    dip_flex = math.pi - _angle_between(
+    dip_flex = _angle_between(
         pts[dip] - pts[pip], pts[tip] - pts[dip]
     )
 
-    # Clamp: floating-point noise can push just past [0, π]
+    # Clamp: floating-point noise can push just past [0, pi]
     mcp_flex = float(np.clip(mcp_flex, 0.0, math.pi))
     pip_flex = float(np.clip(pip_flex, 0.0, math.pi))
     dip_flex = float(np.clip(dip_flex, 0.0, math.pi))
@@ -275,18 +275,18 @@ def _finger_flexion_abduction(
 def _thumb_flexion(pts: np.ndarray) -> ThumbAngles:
     """Compute CMC, MCP, and IP flexion for the thumb.
 
-    The proximal reference bone for CMC flexion is the wrist → CMC vector,
-    with the palm plane used to keep the angle in the flexion–extension plane.
+    The proximal reference bone for CMC flexion is the wrist -> CMC vector,
+    with the palm plane used to keep the angle in the flexion--extension plane.
     """
     cmc, mcp_idx, ip_idx, tip = _THUMB_CHAIN  # indices 1, 2, 3, 4
 
-    cmc_flex = math.pi - _angle_between(
+    cmc_flex = _angle_between(
         pts[cmc] - pts[_WRIST], pts[mcp_idx] - pts[cmc]
     )
-    mcp_flex = math.pi - _angle_between(
+    mcp_flex = _angle_between(
         pts[mcp_idx] - pts[cmc], pts[ip_idx] - pts[mcp_idx]
     )
-    ip_flex = math.pi - _angle_between(
+    ip_flex = _angle_between(
         pts[ip_idx] - pts[mcp_idx], pts[tip] - pts[ip_idx]
     )
 

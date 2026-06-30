@@ -1,4 +1,4 @@
-"""OpenCV drawing helpers for hand landmark visualization."""
+"""Landmark overlay drawing for the camera feed."""
 
 from __future__ import annotations
 
@@ -9,47 +9,69 @@ from cv.hand_tracker import HandLandmarks
 
 
 def draw_hands(
-    frame_bgr: np.ndarray,
+    frame: np.ndarray,
     hands: list[HandLandmarks],
     connections: list[tuple[int, int]],
+    landmark_color: tuple[int, int, int] = (0, 220, 255),
+    connection_color: tuple[int, int, int] = (180, 180, 180),
+    landmark_radius: int = 4,
+    connection_thickness: int = 2,
 ) -> np.ndarray:
-    """Draw hand landmarks and handedness labels on a frame."""
+    """Draw landmark points and skeleton connections onto a BGR frame.
+
+    Coordinates are normalized [0, 1]; this function maps them to pixel
+    space using the frame dimensions.  The frame is modified in place and
+    also returned for convenience.
+
+    Parameters
+    ----------
+    frame:
+        BGR image to draw onto (modified in place).
+    hands:
+        List of detected hands from ``HandTracker.detect()`` (possibly
+        already smoothed).
+    connections:
+        List of (start_idx, end_idx) pairs from ``HandTracker.connections``.
+    landmark_color:
+        BGR color for landmark dots.
+    connection_color:
+        BGR color for bone lines.
+    landmark_radius:
+        Pixel radius of each landmark dot.
+    connection_thickness:
+        Pixel thickness of each connection line.
+
+    Returns
+    -------
+    np.ndarray
+        The same frame with overlays drawn.
+    """
+    h, w = frame.shape[:2]
+
     for hand in hands:
-        points = _landmark_pixels(frame_bgr, hand)
-        for start, end in connections:
-            if start < len(points) and end < len(points):
-                cv2.line(frame_bgr, points[start], points[end], (80, 180, 255), 2)
+        lms = hand.landmarks
+        if not lms:
+            continue
 
-        for point in points:
-            cv2.circle(frame_bgr, point, 4, (30, 220, 30), -1)
+        # Compute pixel coords once for this hand.
+        pts: list[tuple[int, int]] = [
+            (int(lm.x * w), int(lm.y * h)) for lm in lms
+        ]
 
-        if hand.landmarks:
-            height, width = frame_bgr.shape[:2]
-            wrist = hand.landmarks[0]
-            label_x = max(0, min(width - 1, int(wrist.x * width)))
-            label_y = max(20, min(height - 1, int(wrist.y * height) - 12))
-            label = f"{hand.handedness} {hand.score:.2f}"
-            cv2.putText(
-                frame_bgr,
-                label,
-                (label_x, label_y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (30, 220, 30),
-                2,
-                cv2.LINE_AA,
-            )
+        # Draw bone connections first (underneath dots).
+        for start_idx, end_idx in connections:
+            if start_idx < len(pts) and end_idx < len(pts):
+                cv2.line(
+                    frame,
+                    pts[start_idx],
+                    pts[end_idx],
+                    connection_color,
+                    connection_thickness,
+                    cv2.LINE_AA,
+                )
 
-    return frame_bgr
+        # Draw landmark dots.
+        for pt in pts:
+            cv2.circle(frame, pt, landmark_radius, landmark_color, -1, cv2.LINE_AA)
 
-
-def _landmark_pixels(frame_bgr: np.ndarray, hand: HandLandmarks) -> list[tuple[int, int]]:
-    """Convert normalized landmarks to image pixel coordinates."""
-    height, width = frame_bgr.shape[:2]
-    return [
-        (
-            max(0, min(width - 1, int(landmark.x * width))),
-            max(0, min(height - 1, int(landmark.y * height))),
-        )
-        for landmark in hand.landmarks
-    ]
+    return frame

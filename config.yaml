@@ -18,7 +18,7 @@ model_asset_url: https://storage.googleapis.com/mediapipe-models/hand_landmarker
 urdf_path: simulation/assets/allegro/allegro_hand_right.urdf
 gui: true
 gravity: 0.0
-target_hz: 15.0
+target_hz: 60.0
 limits_path: kinematics/joint_limits.yaml
 
 # Smoothing helps reduce MediaPipe landmark jitter before retargeting.

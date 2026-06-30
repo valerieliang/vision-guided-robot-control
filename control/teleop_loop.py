@@ -58,7 +58,7 @@ class TeleopConfig:
     gravity: float = 0.0
 
     # Control — 15 Hz is safe on CPU-only; raise if you have a fast machine
-    target_hz: float = 15.0
+    target_hz: float = 60.0
     limits_path: str = "kinematics/joint_limits.yaml"
     input_source: str = "hand"
 
